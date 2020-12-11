@@ -1,0 +1,537 @@
+---
+title: ' '
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE, echo=FALSE)
+```
+
+```{r include=FALSE}
+library(tidyverse)
+library(fpp2)
+library(tsibble)
+library(tsbox)
+library(gridExtra)
+library(ggcorrplot)
+library(car)
+library(gt)
+library(knitr)
+library(lmtest)
+```
+
+```{r include=FALSE}
+library(spelling)
+spell_check_files('wildfires.Rmd', lang = 'en_US')
+```
+
+
+```{r include=FALSE}
+fire <- read.csv("wildfires_full_df.csv")
+```
+
+
+# New College of Florida - Topics in Statistics
+
+## US Wildfires 
+
+#### *Amanda Bucklin*  
+#### *Andrew Reilly*  
+#### *Nate Wagner*  
+
+<div style="margin-bottom:100px;">
+</div>
+
+### **Summary**
+
+It is often said that the increase in forest fires over the recent years is a consequence of climate change.  With that, we decided to find/create data that would allow us to analyze this trend, or at least explore the relationship between forest fires over time and weather features.
+
+###  **Variable Descriptions**
+
+Our dataset consists of US Forest Service historical data on wildfires from 1992-2015.  The data we found included information on each individual wildfire the Forest Service logged, which we then transformed and aggregated into a Time Series dataset with the variables:  
+
+- YEAR: Year observation  
+- MONTH: Month observation  
+- STATE: State (includes all states except Hawaii due to insufficient weather data)   
+- REGION: Geographical region (West, Midwest, East, South)  
+- ACRES_BURNT: Total number of acres burned by wildfires (by year/month/state)  
+- COUNT_FIRES: Total number of wildfires present (by year/month/state)  
+
+Adding to this, we are also using some weather data we pulled from NOAA - specifically the average temperature and total precipitation for that year/state.  
+
+- TEMP: average temperature (by year/month/state), in degrees Fahrenheit  
+- PRECIP: total precipitation (by year/month/state), in inches  
+
+In total, we have 14,112 observations for our monthly time range from 1992 to 2015. We have also aggregated this data into 4 regions: West, Midwest, Northeast and South.
+
+<div style="margin-bottom:100px;">
+</div>
+
+### **Exploratory Data Analysis**
+
+```{r}
+fire_monthly <- fire %>%
+  group_by(YEAR,MONTH) %>%
+  summarise(AVG_ACRES_BURNT = round(mean(ACRES_BURNT),2),
+            #MAX_ACRES_BURNT = round(max(ACRES_BURNT),2),
+            COUNT = round(sum(COUNT),2), 
+            TOTAL_PRECIP = round(sum(PRECIP),2), 
+            AVG_TEMP = round(mean(TEMP),2)) %>%
+  ungroup()
+
+fire_monthly_ts <- ts(fire_monthly %>% select(AVG_ACRES_BURNT, TOTAL_PRECIP, AVG_TEMP, COUNT), 
+                          frequency = 12, 
+                          start = c(1992,1), 
+                          end = c(2015,12))
+
+fire_monthly_ts2 <- fire_monthly_ts
+colnames(fire_monthly_ts2) <- c("Avg \n Acres \n Burnt", "Total \n Precip", "Avg \n Temp", "Count")
+fire_monthly_ts2 %>%
+  autoplot(facets=T) + 
+  geom_smooth(size=.5) +
+  ggtitle("1992 - 2015 Timeseries of Wildfire and Weather Statistics")
+```
+
+
+It's not clear from the plots that wildfire peaks correspond with dips in total precipitation. However one can see peaks in wildfires line up with peaks in average temperature. 
+
+```{r}
+autoplot(fire_monthly_ts[,'AVG_ACRES_BURNT']) + ylab('Average Acres Burnt') + ggtitle('Average Acres Burnt by wildfires over time in US')
+```
+
+To make it slightly easier to see, we have blown up the graph on top containing our response variable - Average Acres burnt by wildfires - and in this plot it is clear that the variance is not stable, so we will log-transform the response to satisfy model assumptions. 
+
+```{r}
+ggplot(fire_monthly, aes(TOTAL_PRECIP, log(AVG_ACRES_BURNT))) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  labs(x="Total Precipitation", y="Log(Avg Acres Burnt)")
+```
+
+There is a slightly positive relationship between total monthly precipitation and the log average acres burnt. 
+
+```{r}
+ggplot(fire_monthly, aes(AVG_TEMP, log(AVG_ACRES_BURNT))) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  labs(x="Average Temperature", y="Log(Avg Acres Burnt)")
+```
+
+There is a positive relationship between average temperature and the log average acres burnt. Which makes sense since most fires are during warmer seasons. 
+
+```{r}
+corr <- cor(fire_monthly_ts2)
+ggcorrplot(corr, lab = T) +
+  theme_gray() +
+  theme(legend.position = "None") +
+  labs(x = " ", y = " ")
+```
+
+There doesn't seem to be immediate signs of collinearity issues. The correlation between our two predictors average temperature and total precipitation is 0.43.  Our strongest correlation is between average temperature and average acres burnt: 0.52.
+
+
+
+
+<div style="margin-bottom:250px;">
+</div>
+
+## Classic Linear Regression, Monthly
+
+<br>
+
+#### Full Modeling Equation:
+
+$$
+\text{log(AcresBurnt)}_t = \beta_0 + \beta1*\text{Precipitation}_t + \beta_2*\text{Temp}_t + \epsilon_t,\ i.i.d. \ \epsilon_t \sim N(0,\sigma^2)
+$$
+
+```{r}
+lm.obj <- lm(log(AVG_ACRES_BURNT) ~ TOTAL_PRECIP + AVG_TEMP, 
+             data=fire_monthly)
+summary(lm.obj)
+```
+
+#### Check Collinearity:
+
+Vif values are low which shows that we do not have a high correlation between predictors.
+
+```{r}
+library(car)
+vif(lm.obj)
+```
+
+#### Residual Diagnostics:
+
+```{r}
+# Residual diagnostics
+plot(lm.obj, which=1)
+```
+
+**Residual vs Fitted:** The constant variance assumption is satisfied and are centered around zero. The fit is pretty decent.
+
+```{r}
+plot(lm.obj, which=2)
+```
+
+**QQ Plot:** Normality also seems satisfied, which very little departures from normality.
+
+```{r}
+checkresiduals(lm.obj)
+```
+
+**Breusch-Godfrey test:** The small p-value leads us to reject the null, and conclude autocorrelation in the residuals.   
+**Residuals:** Variance is decent, and seems centered around zero.  
+**ACF:** Many lags are outside the white noise bands, and there is evidence of seasonality.  
+**Histogram of Residuals:** Residuals are approximately normal.  
+
+#### Fitted Model:
+
+$$
+\hat{\text{log(AcresBurnt)}_t} = 5.15 - 0.004*\text{Precipitation}_t + 0.07*\text{Temp}_t
+$$
+
+#### Interpretations & Results:
+
+```{r}
+#confint(lm.obj)
+```
+
+
+$$
+\text{AVG_TEMP: Per one degree increase in average monthly temperature, the average monthly acres} \\ 
+\text{burnt increases by 7% (CI: 6% to 7.9%) on average, controlling for precipitation.}
+$$
+
+$$
+\text{AVG_PRECIP: Per one inch increase in monthly precipitation, the average monthly acres burnt}  \\ 
+\text{decreases by 0.4% (CI: -0.79 to 0.009%) on average, controlling for temperature.}
+$$
+
+We find that when controlling for average temperature, the effect of total precipitation on average acres burnt is statistically insignificant. Also, due to autocorrelation in the residuals, we cannot fully trust this inference. 
+
+
+
+<div style="margin-bottom:250px;">
+</div>
+
+
+
+## Dynamic Regression, Country-wide, Monthly 
+
+#### Full Modeling Equation:
+$$ 
+\text{log(} AcresBurnt_t) = \beta_0 + \beta_1 Temp + \beta_2 Precipitation + \epsilon_t, \epsilon_t \sim{ARIMA(2,0,0)(2,0,0)_{12}}
+$$
+
+
+$$
+\epsilon_t = \phi_1 \epsilon_{t-1} + \phi_2 \epsilon_{t-2} + \psi_1 \epsilon_{t-12} + \psi_2 \epsilon_{t-24} + \eta_t, \eta_t \sim_{i.i.d.} N(0,\sigma^2)
+$$
+
+```{r, include=F}
+# Parallel processing!!!
+# fire_fit2 <- auto.arima(monthly_fire_ts[,'AVG_ACRES_BURNT'], lambda = 0,
+#                        xreg=monthly_fire_ts[,c('TOT_PRECIP', 'AVG_TEMP')] %>% as.matrix, 
+#                       max.order = 8, stepwise = F, parallel = T, num.cores = 6)
+# 
+# fire_fit2
+```
+
+
+```{r}
+fire_fit <- auto.arima(fire_monthly_ts[,'AVG_ACRES_BURNT'], lambda = 0,
+                       xreg=(fire_monthly_ts[,c('TOTAL_PRECIP', 'AVG_TEMP')] %>% as.matrix), d=0)
+fire_fit
+```
+
+```{r}
+checkresiduals(fire_fit)
+```
+
+**Ljung-Box test:** The large p-value here means we fail to reject the $H_0$, and conclude our residuals are independently distributed (white noise).
+
+**Residuals:** The variance looks mostly stable, and is centered around zero.  
+**Histogram of Residuals:** Residuals show a pretty normal distribution.  
+**ACF:** There are no lags outside of the white noise bands, further showing that our residuals are uncorrelated.
+
+#### Fitted Model:
+
+```{r}
+coeftest(fire_fit)
+```
+
+```{r}
+confint(fire_fit)
+```
+
+$$ 
+\hat{\text{log(} AcresBurnt)} = 5.33 + .07*Temp - .004*Precipitation
+$$
+
+
+$$
+\hat{\epsilon} = .381* \epsilon_{t-1} + .168* \epsilon_{t-2} + .214* \epsilon_{t-12} + .237* \epsilon_{t-24}
+$$
+
+#### Interpretations:
+
+##### Average Temperature:
+Per one degree increase in average monthly temperature nationwide, the average monthly acres burnt by wildfires increase by 7% (CI: 5.3% to 8.3%) on average, controlling for precipitation.
+
+##### Average Precipitation:
+Per one inch increase in total monthly precipitation nationwide, the average monthly acres burnt by wildfires decrease by .4% (CI: -0.73% to -0.1%) on average, controlling for temperature.
+
+
+When applying an $ARIMA(2,0,0)(2,0,0)_12$ to the model, we see that Average Temperature stays significant but with slightly wider confidence intervals, while Total Precipitation becomes significant with a slightly tighter confidence interval.  
+
+
+#### Comparing the models:
+In classic linear regression our estimate of the coefficient on TOT_PRECIP was -0.004 (95% CI: -0.007 to 0.00009 ) with a SE of 0.002.
+For regression with ARIMA errors, our estimate of the coefficient on TOT_PRECIP was -0.004 (95% CI: -0.0073 to -0.0011) with a SE of 0.0015.  
+
+In classic linear regression our estimate of the coefficient on AVG_TEMP was 0.07 (95% CI: 0.062 to 0.0079 ) with a SE of 0.004.
+For regression with ARIMA errors, our estimate of the coefficient on AVG_TEMP was 0.068 (95% CI: 0.053 to 0.083 ) with a SE of 0.0075.  
+
+When comparing the Classic Linear Regression to the Dynamic Regression, we see roughly the same coefficients on our predictors but slightly different confidence intervals between the two.  Most importantly, the residuals in the Dynamic Regression are shown to be uncorrelated and satisfy our model parameters better. Hence, we can trust the inference on the Dynamic Regression model.   
+
+
+
+<div style="margin-bottom:250px;">
+</div>
+
+
+## Region Level Analysis
+
+```{r}
+fire_monthly_region <- fire %>%
+  group_by(YEAR, MONTH, region) %>%
+  summarise(AVG_ACRES_BURNT = round(mean(ACRES_BURNT),2),
+            MAX_ACRES_BURNT = round(max(ACRES_BURNT),2),
+            COUNT = round(sum(COUNT),2), 
+            TOTAL_PRECIP = round(sum(PRECIP),2), 
+            AVG_TEMP = round(mean(TEMP),2)) %>%
+  ungroup()
+
+g1 <- ggplot(fire_monthly_region, aes(TOTAL_PRECIP, log(AVG_ACRES_BURNT),fill=region,color=region)) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  labs(x="Total Precipitation", y="log(Avg Acres Burnt)")
+
+g2 <- ggplot(fire_monthly_region, aes(AVG_TEMP, log(AVG_ACRES_BURNT),fill=region,color=region)) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  labs(x="Average Temperature", y="log(Avg Acres Burnt)")
+
+
+#colnames(fire_annual) <- c("Year", "Region", "Avg Acres Burnt", "Max Acres Burnt", "Count", "Total Precip", "Avg Temp")
+
+#fire_annual_norm <- fire_annual %>%
+#  mutate(AVG_ACRES_BURNT = AVG_ACRES_BURNT/max(AVG_ACRES_BURNT),
+#         #MAX_ACRES_BURNT = MAX_ACRES_BURNT/max(MAX_ACRES_BURNT),
+#         COUNT = COUNT/max(COUNT), 
+#         TOTAL_PRECIP = TOTAL_PRECIP/max(TOTAL_PRECIP), 
+#         AVG_TEMP = AVG_TEMP/max(AVG_TEMP))
+
+fire_annual_west_ts <- ts(fire_monthly_region %>%
+                            filter(region == "west") %>%
+                            select(AVG_ACRES_BURNT, COUNT, TOTAL_PRECIP, AVG_TEMP), 
+                          frequency = 12, 
+                          start = c(1992,1), 
+                          end = c(2015,12))
+fire_annual_midwest_ts <- ts(fire_monthly_region %>%
+                            filter(region == "midwest") %>%
+                            select(AVG_ACRES_BURNT, COUNT, TOTAL_PRECIP, AVG_TEMP), 
+                          frequency = 12, 
+                          start = c(1992,1), 
+                          end = c(2015,12))
+fire_annual_south_ts <- ts(fire_monthly_region %>%
+                            filter(region == "south") %>%
+                            select(AVG_ACRES_BURNT, COUNT, TOTAL_PRECIP, AVG_TEMP), 
+                          frequency = 12, 
+                          start = c(1992,1), 
+                          end = c(2015,12))
+fire_annual_northeast_ts <- ts(fire_monthly_region %>%
+                            filter(region == "northeast") %>%
+                            select(AVG_ACRES_BURNT, COUNT, TOTAL_PRECIP, AVG_TEMP), 
+                          frequency = 12, 
+                          start = c(1992,1), 
+                          end = c(2015,12))
+```
+
+```{r}
+fire_annual_west_ts2 <- fire_annual_west_ts
+colnames(fire_annual_west_ts2) <- c("Avg \n Acres \n Burnt", "Count", "Total \n Precip", "Avg \n Temp")
+p1 <- fire_annual_west_ts2 %>%
+  autoplot(facets=T) + ggtitle("West")
+
+fire_annual_midwest_ts2 <- fire_annual_midwest_ts
+colnames(fire_annual_midwest_ts2) <- c("Avg \n Acres \n Burnt", "Count", "Total \n Precip", "Avg \n Temp")
+p2 <- fire_annual_midwest_ts2 %>%
+  autoplot(facets=T) + ggtitle("Midwest")
+
+fire_annual_south_ts2 <- fire_annual_south_ts
+colnames(fire_annual_south_ts2) <- c("Avg \n Acres \n Burnt", "Count", "Total \n Precip", "Avg \n Temp")
+p3 <- fire_annual_south_ts2 %>%
+  autoplot(facets=T) + ggtitle("South")
+
+fire_annual_northeast_ts2 <- fire_annual_northeast_ts
+colnames(fire_annual_northeast_ts2) <- c("Avg \n Acres \n Burnt", "Count", "Total \n Precip", "Avg \n Temp")
+p4 <- fire_annual_northeast_ts2 %>%
+  autoplot(facets=T) + ggtitle("Northeast")
+
+grid.arrange(p1,p4,p2,p3)
+```
+
+
+
+```{r}
+g1
+```
+
+The effect of total precipitation is consistent across the midwest, south and northeast. However, we can see a strong negative relationship between total precipitation and the log average acres burnt for the west region. 
+
+```{r}
+g2
+```
+
+Again, effects of average temperature is about the same for all regions except for the west where we see a strong positive relationship. 
+
+```{r}
+annual_all_stats <- fire %>%
+  group_by(region) %>%
+  summarise(AVG_ACRES_BURNT = round(mean(ACRES_BURNT),2),
+            #MAX_ACRES_BURNT = round(max(ACRES_BURNT),2),
+            COUNT = round(mean(COUNT),2), 
+            TOTAL_PRECIP = round(mean(PRECIP),2), 
+            AVG_TEMP = round(mean(TEMP),2)) %>%
+  ungroup()
+
+colnames(annual_all_stats) <- c("Region", "Avg Acres Burnt", "Count", "Total Precip", "Avg Temp")
+levels(annual_all_stats$Region) <- c("Midwest", "Northeast", "South", "West")
+
+kable(annual_all_stats %>% select(everything(), Count), caption = "1992-2015 US Wildfire and Weather Monthly Averages")
+```
+
+The south region averages the most fires per month over the timeline, however, the west has seen significantly larger fires and averages many more acres burnt. The west is also associated with the lowest average montly total precipitation compared to the other regions. 
+
+```{r}
+corr_west <- cor(as.data.frame(fire_annual_west_ts))[1,c(3:4)]
+corr_midwest <- cor(as.data.frame(fire_annual_midwest_ts))[1,c(3:4)]
+corr_south <- cor(as.data.frame(fire_annual_south_ts))[1,c(3:4)]
+corr_northeast <- cor(as.data.frame(fire_annual_northeast_ts))[1,c(3:4)]
+
+cor.df <- cbind(data.frame(round(rbind(corr_west,corr_midwest,corr_south,corr_northeast), 2)), data.frame(Region = c("West", "Midwest", "South", "Northeast")))
+
+rownames(cor.df) <- NULL
+
+annual_all <- fire %>%
+  group_by(YEAR,MONTH,region) %>%
+  summarise(AVG_ACRES_BURNT = round(mean(ACRES_BURNT),2),
+            MAX_ACRES_BURNT = round(max(ACRES_BURNT),2),
+            COUNT = round(sum(COUNT),2), 
+            TOTAL_PRECIP = round(mean(PRECIP),2), 
+            AVG_TEMP = round(mean(TEMP),2)) %>%
+  ungroup()
+
+all.df <- round(cor(as.data.frame(annual_all %>% select(-region)))[1,c(6:7)],2)
+all.df["Region"] <- "All Regions"
+
+cor.df$Region <- as.character(cor.df$Region)
+cor.df <- rbind(all.df, cor.df)
+colnames(cor.df) <- c("Total Precip", "Avg Temp", "Region")
+
+kable(cor.df %>% select(Region,everything()) %>% as_tibble(), caption = "Correlation With Average Acres Burnt")
+```
+
+The correlations are consistent with the above plots. The strongest correlations between weather and average acres burnt come from the west. 
+
+
+
+## Dynamic Regression:
+
+
+To compare the effects of total precipitation and average temperature across regions, we fit a seperate dynamic regression model for each region.
+
+For the west region we fit the following model:
+
+$$
+\text{log(AcresBurnt)}_{t} = \beta_0 + \beta_1 \times \text{Precipitation}_{t} + \beta_2 \times \text{Temp}_{t} + e_{t}, \ e_{t} \ \sim ARIMA(0,0,4) \\
+e_{t} = \theta_1 \times \eta_{t-1} + \theta_2 \times \eta_{t-2} + \theta_3 \times \eta_{t-3} + \theta_4 \times \eta_{t-4} + \eta_t, \ \eta_t \ \sim \ i.i.d. \ N(0,\sigma^2)
+$$
+
+#### Residual Diagnostics for the west region:
+
+```{r}
+auto.fit.west <- auto.arima(fire_annual_west_ts[,"AVG_ACRES_BURNT"], 
+                         lambda = 0,
+                       xreg = fire_annual_west_ts[,c("TOTAL_PRECIP","AVG_TEMP")] %>%
+                         as.matrix)
+
+checkresiduals(auto.fit.west)
+#ggtsdisplay(auto.fit.west$residuals)
+```
+
+There seems to be constant variance in the residuals, which are also centered around 0. Normality is also satisfied due to the bell shaped histogram of residuals. Also, there are a couple autocorrelations outside white noise bands, however the p-value is large enough that we fail to reject the null and conclude residuals are white noise.
+
+
+```{r}
+auto.fit.midwest <- auto.arima(fire_annual_midwest_ts[,"AVG_ACRES_BURNT"], 
+                         lambda = 0,
+                       xreg = fire_annual_midwest_ts[,c("TOTAL_PRECIP","AVG_TEMP")] %>%
+                         as.matrix)
+auto.fit.south <- auto.arima(fire_annual_south_ts[,"AVG_ACRES_BURNT"], 
+                         lambda = 0,
+                       xreg = fire_annual_south_ts[,c("TOTAL_PRECIP","AVG_TEMP")] %>%
+                         as.matrix,d=0)
+auto.fit.northeast <- auto.arima(fire_annual_northeast_ts[,"AVG_ACRES_BURNT"], 
+                         lambda = 0,
+                       xreg = fire_annual_northeast_ts[,c("TOTAL_PRECIP","AVG_TEMP")] %>%
+                         as.matrix, D=0)
+
+kable(round(coeftest(auto.fit.west)[6:7,],3), caption = "Dynamic Regression with ARIMA(0,0,4) errors for West Region")
+kable(round(coeftest(auto.fit.midwest)[7:8,],3), caption = "Dynamic Regression with ARIMA(2,0,1)(2,0,0)[12] errors for Midwest Region")
+kable(round(coeftest(auto.fit.south)[5:6,],3), caption = "Dynamic Regression with ARIMA(1,0,0)(2,0,0)[12] errors for South Region")
+kable(round(coeftest(auto.fit.northeast)[5:6,],3), caption = "Dynamic Regression with ARIMA(1,0,0)(2,0,0)[12] errors for Northeast Region")
+```
+
+#### Fitted Equation:
+
+$$ 
+\hat{\text{log(} AcresBurnt)}_t = 2.02 + 0.137 \times Temp_t - 0.008 \times Precipitation_t
+$$
+
+
+$$
+\hat{e_{t}} = 0.20 \times \eta_{t-1} + 0.25 \times \eta_{t-2} + 0.23 \times \eta_{t-3} +0.16 \times \eta_{t-4}
+$$
+
+
+#### Interpretations & Results:  
+
+For the west region, we find that per one degree increase in average monthly temperature, the average monthly acres burnt increases by 13.7% (CI: 12.4% to 15%) on average, controlling for precipitation.
+
+For the west region, we find that per one inch increase in monthly precipitation, the average monthly acres burnt decreases by 0.8% (CI: -2.88% to 1.33%) on average, controlling for temperature. However, this effect is also statistically insignificant. 
+
+
+
+
+
+<div style="margin-bottom:150px;">
+</div>
+
+## Sources:
+
+Wildfire data: https://www.fs.usda.gov/rds/archive/Catalog/RDS-2013-0009.4/  
+Citation:  
+Short, Karen C. 2017. Spatial wildfire occurrence data for the United States, 1992-2015 [FPA_FOD_20170508]. 4th Edition. Fort Collins, CO: Forest Service Research Data Archive. https://doi.org/10.2737/RDS-2013-0009.4  
+
+Weather data: https://www.ncdc.noaa.gov/cag/statewide/time-series/  
+Citation:  
+NOAA National Centers for Environmental information, Climate at a Glance: Statewide Time Series, published November 2020, retrieved on November 16, 2020 from https://www.ncdc.noaa.gov/cag/   
+
+<br>
+<br>
